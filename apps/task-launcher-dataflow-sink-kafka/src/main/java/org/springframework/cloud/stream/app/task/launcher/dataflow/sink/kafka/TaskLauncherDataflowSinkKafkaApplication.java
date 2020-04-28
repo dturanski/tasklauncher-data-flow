@@ -18,10 +18,11 @@ package org.springframework.cloud.stream.app.task.launcher.dataflow.sink.kafka;
 
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.cloud.dataflow.rest.client.config.DataFlowClientAutoConfiguration;
 import org.springframework.context.annotation.Import;
 
 
-@SpringBootApplication
+@SpringBootApplication(exclude = DataFlowClientAutoConfiguration.class)
 @Import(org.springframework.cloud.stream.app.task.launcher.dataflow.sink.TaskLauncherDataflowSinkConfiguration.class)
 public class TaskLauncherDataflowSinkKafkaApplication {
 

@@ -161,45 +161,69 @@ public class TaskLauncherDataflowSinkConfiguration {
 
 		@Bean
 		OAuth2AccessTokenRenewingClientHttpRequestInterceptor oAuth2AccessTokenRenewingClientHttpRequestInterceptor
-				(OAuth2AccessTokenResponse oAuth2AccessTokenResponse) {
-			return new OAuth2AccessTokenRenewingClientHttpRequestInterceptor(oAuth2AccessTokenResponse);
+				(OAuth2AccessTokenResponseProvider renewAccessTokenResponseProvider) {
+			return new OAuth2AccessTokenRenewingClientHttpRequestInterceptor(renewAccessTokenResponseProvider);
 		}
 
 		@Bean
-		OAuth2AccessTokenResponse renewAccessTokenResponse(ClientRegistrationRepository clientRegistrations,
-														   OAuth2AccessTokenResponseClient clientCredentialsTokenResponseClient) {
-
-			ClientRegistration clientRegistration = clientRegistrations.findByRegistrationId(DEFAULT_REGISTRATION_ID);
-			OAuth2ClientCredentialsGrantRequest grantRequest = new OAuth2ClientCredentialsGrantRequest(clientRegistration);
-			return clientCredentialsTokenResponseClient.getTokenResponse(grantRequest);
+		OAuth2AccessTokenResponseProvider refreshAccessTokenResponseProvider(ClientRegistrationRepository clientRegistrations,
+																			 OAuth2AccessTokenResponseClient clientCredentialsTokenResponseClient) {
+			return new OAuth2AccessTokenResponseProvider(clientRegistrations, clientCredentialsTokenResponseClient);
 		}
 
+		/**
+		 *
+		 */
+		static class OAuth2AccessTokenResponseProvider {
+			private final OAuth2ClientCredentialsGrantRequest grantRequest;
+			private final OAuth2AccessTokenResponseClient clientCredentialsTokenResponseClient;
+
+			OAuth2AccessTokenResponseProvider(ClientRegistrationRepository clientRegistrations,
+											  OAuth2AccessTokenResponseClient clientCredentialsTokenResponseClient) {
+				ClientRegistration clientRegistration = clientRegistrations.findByRegistrationId(DEFAULT_REGISTRATION_ID);
+				this.grantRequest = new OAuth2ClientCredentialsGrantRequest(clientRegistration);
+				this.clientCredentialsTokenResponseClient = clientCredentialsTokenResponseClient;
+			}
+
+			public OAuth2AccessTokenResponse oAuth2AccessTokenResponse() {
+				return clientCredentialsTokenResponseClient.getTokenResponse(grantRequest);
+			}
+		}
+
+		/**
+		 *
+		 */
 		static class OAuth2AccessTokenRenewingClientHttpRequestInterceptor implements ClientHttpRequestInterceptor {
 
 			private RetryTemplate retryTemplate = new RetryTemplate();
 
-			private final OAuth2AccessTokenResponse oAuth2AccessTokenResponse;
+			private final OAuth2AccessTokenResponseProvider refreshAccessTokenResponseProvider;
 
-			private ThreadLocal<String> oauthAccessToken = new ThreadLocal<>();
+			private OAuth2AccessTokenResponse oAuth2AccessTokenResponse;
 
-			OAuth2AccessTokenRenewingClientHttpRequestInterceptor(OAuth2AccessTokenResponse oAuth2AccessTokenResponse) {
-				Assert.notNull(oAuth2AccessTokenResponse, "'oAuth2AccessTokenResponse' cannot be null");
-				this.oAuth2AccessTokenResponse = oAuth2AccessTokenResponse;
-				this.oauthAccessToken.set(oAuth2AccessTokenResponse.getAccessToken().getTokenValue());
+			OAuth2AccessTokenRenewingClientHttpRequestInterceptor(OAuth2AccessTokenResponseProvider refreshAccessTokenResponseProvider) {
+				Assert.notNull(refreshAccessTokenResponseProvider, "'refreshAccessTokenResponseProvider' cannot be null");
+				this.refreshAccessTokenResponseProvider = refreshAccessTokenResponseProvider;
+				this.oAuth2AccessTokenResponse = this.refreshOAuth2AccessTokenResponse();
+				logger.warn("Access token " + this.getTokenValue());
 			}
 
 			@Override
 			public ClientHttpResponse intercept(HttpRequest httpRequest, byte[] bytes, ClientHttpRequestExecution execution) throws IOException {
 				return retryTemplate.execute(retryContext -> {
 					httpRequest.getHeaders().add("Authorization",
-							OAuth2AccessToken.TokenType.BEARER.getValue() + " " + this.oauthAccessToken.get());
+							OAuth2AccessToken.TokenType.BEARER.getValue() + " " + this.getTokenValue());
+					logger.debug("Token issued " + oAuth2AccessTokenResponse.getAccessToken().getIssuedAt() +
+							" expires: " + oAuth2AccessTokenResponse.getAccessToken().getExpiresAt());
 					ClientHttpResponse response = execution.execute(httpRequest, bytes);
+					logger.debug(response.getStatusCode());
 					if (response.getStatusCode().equals(HttpStatus.UNAUTHORIZED)) {
 
 						try {
-							this.oauthAccessToken.set(oAuth2AccessTokenResponse.getAccessToken().getTokenValue());
+							this.oAuth2AccessTokenResponse = this.refreshOAuth2AccessTokenResponse();
+							httpRequest.getHeaders().remove("Authorization");
 							httpRequest.getHeaders().add("Authorization",
-									OAuth2AccessToken.TokenType.BEARER.getValue() + " " + this.oauthAccessToken.get());
+									OAuth2AccessToken.TokenType.BEARER.getValue() + " " + this.getTokenValue());
 							response = execution.execute(httpRequest, bytes);
 						} catch (IOException e) {
 							throw new RuntimeException(e.getCause());
@@ -207,6 +231,14 @@ public class TaskLauncherDataflowSinkConfiguration {
 					}
 					return response;
 				});
+			}
+
+			private OAuth2AccessTokenResponse refreshOAuth2AccessTokenResponse() {
+				return refreshAccessTokenResponseProvider.oAuth2AccessTokenResponse();
+			}
+
+			private String getTokenValue() {
+				return this.oAuth2AccessTokenResponse.getAccessToken().getTokenValue();
 			}
 		}
 	}
